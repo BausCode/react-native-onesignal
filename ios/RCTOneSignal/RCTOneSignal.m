@@ -1,8 +1,9 @@
 #import "RCTOneSignal.h"
 #import "RCTConvert.h"
-#import "RCTBridge.h"
-#import "RCTEventDispatcher.h"
+#import "RCTEventEmitter.h"
 #import "RCTUtils.h"
+
+#import <OneSignal/OneSignal.h>
 
 #if __IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_8_0
 
@@ -14,75 +15,49 @@
 
 #endif
 
-NSString *const OSRemoteNotificationReceived = @"RemoteNotificationReceived";
-NSString *const OSRemoteNotificationsRegistered = @"RemoteNotificationsRegistered";
-
-@interface RCTOneSignal()
-
+@interface RCTOneSignal ()
 @end
 
 @implementation RCTOneSignal
 
-static OneSignal *oneSignal;
-@synthesize bridge = _bridge;
-
-NSDictionary* launchDict;
-
 RCT_EXPORT_MODULE(RNOneSignal)
+
+/**
+* Override this method to return an array of supported event names. Attempting
+* to observe or send an event that isn't included in this list will result in
+* an error.
+*/
+- (NSArray<NSString *> *)supportedEvents {
+    return @[@"remoteNotificationReceived", @"remoteNotificationOpened", @"remoteNotificationRegistered", @"idsAvailable"];
+}
+
+NSString *const RemoteNotificationReceived = @"remoteNotificationReceived";
+NSString *const RemoteNotificationRegistered = @"remoteNotificationRegistered";
+NSString *const RemoteNotificationOpened = @"remoteNotificationOpened";
+NSString *const IdsAvailable = @"idsAvailable";
 
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
-- (void)setBridge:(RCTBridge *)receivedBridge {
-    BOOL firstBridge = (_bridge == nil);
-    _bridge = receivedBridge;
+- (id)initWithLaunchOptions:(NSDictionary *)launchOptions appId:(NSString *)appId {
 
-    if (launchDict) {
-        NSLog(@"launchDict:%@", launchDict);
-        [_bridge.eventDispatcher sendDeviceEventWithName:@"remoteNotificationOpened" body:launchDict];
-        launchDict = nil;
-    }
-
-    if (firstBridge) {
-        [[NSNotificationCenter defaultCenter] addObserver:self
-                                                selector:@selector(handleRemoteNotificationReceived:)
-                                                    name:OSRemoteNotificationReceived
-                                                    object:nil];
-        [[NSNotificationCenter defaultCenter] addObserver:self
-                                                selector:@selector(handleRemoteNotificationsRegistered:)
-                                                    name:OSRemoteNotificationsRegistered
-                                                    object:nil];
-    }
+    return [self initWithLaunchOptions:launchOptions appId:appId settings:nil];
 }
 
-- (id)initWithLaunchOptions:(NSDictionary *)launchOptions appId:(NSString *)appId{
-
-    return [self initWithLaunchOptions:launchOptions appId:appId autoRegister:YES];
-}
-
-- (id)initWithLaunchOptions:(NSDictionary *)launchOptions appId:(NSString *)appId autoRegister:(BOOL)autoRegister {
-    oneSignal = [[OneSignal alloc]
-                 initWithLaunchOptions:launchOptions
-                 appId:appId
-                 handleNotification:^(NSString* message, NSDictionary* additionalData, BOOL isActive) {
-                     if (additionalData) {
-                         launchDict = @{
-                                        @"message"     : message,
-                                        @"additionalData" : additionalData,
-                                        @"isActive" : [NSNumber numberWithBool:isActive]
-                                        };
-                     } else {
-                         launchDict = @{
-                                        @"message"     : message,
-                                        @"additionalData" : [[NSDictionary alloc] init],
-                                        @"isActive" : [NSNumber numberWithBool:isActive]
-                                        };
-                     }
-                     [[NSNotificationCenter defaultCenter] postNotificationName:OSRemoteNotificationReceived
-                                                                         object:self userInfo:launchDict];
+- (id)initWithLaunchOptions:(NSDictionary *)launchOptions appId:(NSString *)appId settings:(NSDictionary*)settings {
+    
+    [OneSignal setValue:@"react" forKey:@"mSDKType"];
+    
+    [OneSignal initWithLaunchOptions:launchOptions
+                               appId:appId
+          handleNotificationReceived:^(OSNotification* notification) {
+              [self handleRemoteNotificationReceived:[notification stringify]];
                  }
-                 autoRegister:autoRegister];
+            handleNotificationAction:^(OSNotificationOpenedResult * result) {
+                [self handleRemoteNotificationOpened:[result stringify]];
+            }
+                 settings:settings];
 
     return self;
 }
@@ -92,12 +67,17 @@ RCT_EXPORT_MODULE(RNOneSignal)
     // Keeping empty method around so developers do not get compile errors when updating versions.
 }
 
-- (void)handleRemoteNotificationReceived:(NSNotification *)notification {
-    [_bridge.eventDispatcher sendDeviceEventWithName:@"remoteNotificationOpened" body:notification.userInfo];
+- (void)handleRemoteNotificationReceived:(NSString *)notification {
+    [self sendEventWithName:@"remoteNotificationReceived" body:notification];
 }
 
-- (void)handleRemoteNotificationsRegistered:(NSNotification *)notification {
-    [_bridge.eventDispatcher sendDeviceEventWithName:@"remoteNotificationsRegistered" body:notification.userInfo];
+- (void)handleRemoteNotificationOpened:(NSString *)result {
+    NSLog(result);
+    [self sendEventWithName:@"remoteNotificationOpened" body:result];
+}
+
+- (void)handleRemoteNotificationRegistered:(NSNotification *)notification {
+    [self sendEventWithName:@"remoteNotificationRegistered" body:notification.userInfo];
 }
 
 RCT_EXPORT_METHOD(checkPermissions:(RCTResponseSenderBlock)callback)
@@ -113,9 +93,7 @@ RCT_EXPORT_METHOD(checkPermissions:(RCTResponseSenderBlock)callback)
     } else {
         
 #if __IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_8_0
-        
         types = [RCTSharedApplication() enabledRemoteNotificationTypes];
-        
 #endif
         
     }
@@ -159,34 +137,34 @@ RCT_EXPORT_METHOD(requestPermissions:(NSDictionary *)permissions) {
 }
 
 RCT_EXPORT_METHOD(registerForPushNotifications) {
-    [oneSignal registerForPushNotifications];
+    [OneSignal registerForPushNotifications];
 }
 
 RCT_EXPORT_METHOD(sendTag:(NSString *)key value:(NSString*)value) {
-    [oneSignal sendTag:key value:value];
+    [OneSignal sendTag:key value:value];
 }
 
 RCT_EXPORT_METHOD(configure) {
-    [oneSignal IdsAvailable:^(NSString* userId, NSString* pushToken) {
+    [OneSignal IdsAvailable:^(NSString* userId, NSString* pushToken) {
 
         NSDictionary *params = @{
           @"pushToken": pushToken ?: [NSNull null],
           @"userId" : userId ?: [NSNull null]
         };
 
-        [_bridge.eventDispatcher sendDeviceEventWithName:@"idsAvailable" body:params];
+        [self sendEventWithName:@"idsAvailable" body:params];
     }];
 }
 
 RCT_EXPORT_METHOD(sendTags:(NSDictionary *)properties) {
-    [oneSignal sendTags:properties onSuccess:^(NSDictionary *sucess) {
+    [OneSignal sendTags:properties onSuccess:^(NSDictionary *sucess) {
         NSLog(@"Send Tags Success");
     } onFailure:^(NSError *error) {
         NSLog(@"Send Tags Failure");
     }];}
 
 RCT_EXPORT_METHOD(getTags:(RCTResponseSenderBlock)callback) {
-    [oneSignal getTags:^(NSDictionary *tags) {
+    [OneSignal getTags:^(NSDictionary *tags) {
         NSLog(@"Get Tags Success");
         callback(@[tags]);
     } onFailure:^(NSError *error) {
@@ -196,23 +174,31 @@ RCT_EXPORT_METHOD(getTags:(RCTResponseSenderBlock)callback) {
 }
 
 RCT_EXPORT_METHOD(deleteTag:(NSString *)key) {
-    [oneSignal deleteTag:key];
+    [OneSignal deleteTag:key];
 }
 
 RCT_EXPORT_METHOD(setSubscription:(BOOL)enable) {
-    [oneSignal setSubscription:enable];
+    [OneSignal setSubscription:enable];
 }
 
-RCT_EXPORT_METHOD(enableInAppAlertNotification:(BOOL)enable) {
-    [oneSignal enableInAppAlertNotification:enable];
+RCT_EXPORT_METHOD(promptLocation) {
+    [OneSignal promptLocation];
 }
 
 RCT_EXPORT_METHOD(postNotification:(NSDictionary *)contents data:(NSDictionary *)data player_id:(NSString*)player_id) {
-    [oneSignal postNotification:@{
+    [OneSignal postNotification:@{
                                   @"contents" : contents,
                                   @"data" : @{@"p2p_notification": data},
                                   @"include_player_ids": @[player_id]
                                   }];
+}
+
+RCT_EXPORT_METHOD(syncHashedEmail:(NSString*)email) {
+    [OneSignal syncHashedEmail:email];
+}
+
+RCT_EXPORT_METHOD(setLogLevel:(ONE_S_LOG_LEVEL)logLevel visualLogLevel:(ONE_S_LOG_LEVEL)visualLogLevel) {
+    [OneSignal setLogLevel:logLevel visualLevel:visualLogLevel];
 }
 
 @end
